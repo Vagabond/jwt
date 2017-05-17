@@ -96,8 +96,16 @@ jwt_is_expired(_) ->
     false.
 
 jwt_check_sig(<<"JWT">>, Alg, Header, Claims, Signature, Key) ->
-    Payload = <<Header/binary, ".", Claims/binary>>,
-    jwt_sign(Alg, Payload, Key) =:= Signature;
+    case algorithm_to_crypto(Alg) of
+        {hmac, _} ->
+            Payload = <<Header/binary, ".", Claims/binary>>,
+            jwt_sign(Alg, Payload, Key) =:= Signature;
+        {ecdhe, Crypto} ->
+            io:format("~p ~p ~p ~p~n", [Crypto, Header, Claims, Signature]),
+            R = public_key:verify(<<Header/binary, ".", Claims/binary>>, Crypto, base64url:decode(Signature), Key),
+						%io:format(R),
+						R
+    end;
 jwt_check_sig(_, _, _, _, _, _) ->
     false.
 
@@ -143,12 +151,46 @@ jwt_header(Alg) ->
 jwt_sign(Alg, Payload, Key) ->
     case algorithm_to_crypto(Alg) of
         undefined -> undefined;
-        Crypto -> base64url:encode(crypto:hmac(Crypto, Key, Payload))
+        {hmac, Crypto} -> base64url:encode(crypto:hmac(Crypto, Key, Payload));
+        {ecdhe, Crypto} ->
+            Sig = public_key:sign(Payload, Crypto, Key),
+            {'ECDSA-Sig-Value', R, S} = public_key:der_decode('ECDSA-Sig-Value', Sig),
+            RBin = int_to_bin(R),
+            SBin = int_to_bin(S),
+            Size = 32,
+            RPad = pad(RBin, Size),
+            SPad = pad(SBin, Size),
+            Signature = << RPad/binary, SPad/binary >>,
+            base64url:encode(Signature)
     end.
 
-algorithm_to_crypto(<<"HS256">>) -> sha256;
-algorithm_to_crypto(<<"HS384">>) -> sha384;
-algorithm_to_crypto(<<"HS512">>) -> sha512;
+algorithm_to_crypto(<<"HS256">>) -> {hmac, sha256};
+algorithm_to_crypto(<<"HS384">>) -> {hmac, sha384};
+algorithm_to_crypto(<<"HS512">>) -> {hmac, sha512};
+algorithm_to_crypto(<<"ES256">>) -> {ecdhe, sha256};
 algorithm_to_crypto(_)           -> undefined.
 
 epoch() -> erlang:system_time(seconds).
+
+
+%% @private
+int_to_bin(X) when X < 0 -> int_to_bin_neg(X, []);
+int_to_bin(X) -> int_to_bin_pos(X, []).
+
+%% @private
+int_to_bin_pos(0,Ds=[_|_]) ->
+    list_to_binary(Ds);
+int_to_bin_pos(X,Ds) ->
+    int_to_bin_pos(X bsr 8, [(X band 255)|Ds]).
+
+%% @private
+int_to_bin_neg(-1, Ds=[MSB|_]) when MSB >= 16#80 ->
+    list_to_binary(Ds);
+int_to_bin_neg(X,Ds) ->
+    int_to_bin_neg(X bsr 8, [(X band 255)|Ds]).
+
+%% @private
+pad(Bin, Size) when byte_size(Bin) =:= Size ->
+    Bin;
+pad(Bin, Size) ->
+    pad(<< 0, Bin/binary >>, Size).
