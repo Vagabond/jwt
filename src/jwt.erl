@@ -100,7 +100,7 @@ jwt_check_sig(<<"JWT">>, Alg, Header, Claims, Signature, Key) ->
         {hmac, _} ->
             Payload = <<Header/binary, ".", Claims/binary>>,
             jwt_sign(Alg, Payload, Key) =:= Signature;
-        {ecdhe, Crypto} ->
+        {ecdsa, Crypto} ->
             io:format("~p ~p ~p ~p~n", [Crypto, Header, Claims, Signature]),
             R = public_key:verify(<<Header/binary, ".", Claims/binary>>, Crypto, base64url:decode(Signature), Key),
 						%io:format(R),
@@ -152,8 +152,13 @@ jwt_sign(Alg, Payload, Key) ->
     case algorithm_to_crypto(Alg) of
         undefined -> undefined;
         {hmac, Crypto} -> base64url:encode(crypto:hmac(Crypto, Key, Payload));
-        {ecdhe, Crypto} ->
-            Sig = public_key:sign(Payload, Crypto, Key),
+        {ecdsa, Crypto} ->
+            Sig = case is_function(Key) of
+                      true ->
+                          Key(Payload, Crypto);
+                      false ->
+                          public_key:sign(Payload, Crypto, Key)
+                  end,
             {'ECDSA-Sig-Value', R, S} = public_key:der_decode('ECDSA-Sig-Value', Sig),
             RBin = int_to_bin(R),
             SBin = int_to_bin(S),
@@ -161,13 +166,17 @@ jwt_sign(Alg, Payload, Key) ->
             RPad = pad(RBin, Size),
             SPad = pad(SBin, Size),
             Signature = << RPad/binary, SPad/binary >>,
+            base64url:encode(Signature);
+        {rsa, Crypto} ->
+            Signature = public_key:sign(Payload, Crypto, Key),
             base64url:encode(Signature)
     end.
 
 algorithm_to_crypto(<<"HS256">>) -> {hmac, sha256};
 algorithm_to_crypto(<<"HS384">>) -> {hmac, sha384};
 algorithm_to_crypto(<<"HS512">>) -> {hmac, sha512};
-algorithm_to_crypto(<<"ES256">>) -> {ecdhe, sha256};
+algorithm_to_crypto(<<"ES256">>) -> {ecdsa, sha256};
+algorithm_to_crypto(<<"RS256">>) -> {rsa, sha256};
 algorithm_to_crypto(_)           -> undefined.
 
 epoch() -> erlang:system_time(seconds).
